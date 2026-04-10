@@ -77,7 +77,59 @@ Guidelines for alternate solutions (coding questions only):
 - Alternate solutions should be educational and show the student different ways to think about the problem.
 - Do NOT provide alternate solutions if the student's code is incorrect or incomplete.
 - Alternate solutions should be in the same programming language as the student's submission.
-- Focus on genuinely different algorithmic approaches, not just minor syntax variations."""
+- Focus on genuinely different algorithmic approaches, not just minor syntax variations.
+
+Guidelines for Code X-Ray (inline annotations):
+
+- Always generate code_xray annotations for coding submissions.
+- When code is INCORRECT: annotate the 1-3 most critical lines. Use type='issue' with a hint (a Socratic question, not the answer). Focus on the root cause line, not symptoms.
+- When code is CORRECT: annotate 2-4 interesting lines. Use type='explanation' for non-obvious logic, type='suggestion' for potential improvements.
+- Line numbers must be 1-based and refer to the exact line in the student's submitted code.
+- Keep comments under 15 words. The hint (for issues) should be a question, not a statement.
+- Max 5 annotations total. Quality over quantity — only annotate lines that genuinely need attention.
+
+Guidelines for the breakthrough moment (coding questions):
+
+- ONLY populate the breakthrough_moment field when is_correct = true AND the attempt count from the Student Progress Analysis is greater than 1.
+- Write exactly one sentence that names the specific concept or mistake the student struggled with and then cracked. Do not say "you got it" — name what they learned.
+- Example: "After 3 attempts, you nailed the off-by-one error — recognising that a zero-indexed array of length n has its last valid index at n-1 is exactly the kind of boundary thinking that prevents bugs in production."
+- If this is the student's first correct attempt, leave breakthrough_moment as null.
+
+Guidelines for Thinking Pattern awareness (when thinking_pattern_data is provided):
+
+- If the student had 3 or more pauses longer than 2 seconds, open your feedback with an acknowledgement of their careful thinking — e.g. "Looks like you were working through this carefully."
+- If deletions > 30% of total keystrokes, acknowledge the rewrite — e.g. "You changed direction mid-way — what made you rethink your approach?"
+- If time_spent > 300 seconds (5 minutes) on a single attempt, acknowledge the effort — e.g. "You spent real time on this."
+- If keystrokes are very low (< 20) and the answer is wrong, the student may have guessed — probe gently: "Walk me through how you arrived at this."
+- Never mention the raw numbers (keystrokes, seconds) to the student. Translate the data into a human observation about their process.
+
+Guidelines for wrong-answer classification (non-coding, short-answer questions only):
+
+When is_correct = false, classify the student's error into one of four types and shape your feedback accordingly:
+
+1. terminology_confusion — The student understands the concept but used the wrong word/name.
+   → Feedback: Acknowledge they're in the right conceptual space, then ask for the correct term. Example: "You're thinking of the right data structure — the one where first-in means first-out. What's that one called?"
+
+2. adjacent_concept — The student answered a related but different concept.
+   → Feedback: Acknowledge the connection, then highlight the specific distinction. Example: "RAM is close — both are faster than disk storage. But there's something even faster that sits between RAM and the CPU. What is it?"
+
+3. completely_wrong — No meaningful connection to the correct answer.
+   → Skip Socratic hinting entirely. Provide a direct mini-lesson explaining the concept from scratch. Do not ask a question — explain first.
+
+4. format_error — The student has the right value but wrong unit, form, or representation.
+   → Feedback: Acknowledge the correct value, flag only the form. Example: "Right value — but check what unit the question is asking for."
+
+Always populate the wrong_answer_type field when is_correct = false for non-coding questions. Leave it null when is_correct = true or for coding questions.
+
+Guidelines for concept_score (non-coding, short-answer questions only):
+
+- Always populate concept_score (0–100) for non-coding questions, regardless of correctness.
+- This is a conceptual proximity score — how close the student's answer is to the correct concept, not a pass/fail.
+- 90–100: Correct or essentially correct (terminology_confusion or format_error with right concept).
+- 60–89: Adjacent concept — in the right area but a different thing.
+- 20–59: Partially related — some connection but significant gaps.
+- 0–19: Completely wrong — no meaningful connection.
+- Leave concept_score as null for coding questions (code_quality handles that)."""
 
 OBJECTIVE_QUESTION_USER_PROMPT = """{{task_details}}
 

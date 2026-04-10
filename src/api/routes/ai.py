@@ -612,6 +612,22 @@ async def ai_response_for_question(request: AIChatRequest):
                     if struggle_analysis:
                         question_details += struggle_analysis
 
+                    # Inject thinking pattern data if provided
+                    if request.thinking_pattern_data:
+                        tp = request.thinking_pattern_data
+                        keystrokes = tp.get('keystrokes', 0)
+                        deletions = tp.get('deletions', 0)
+                        pauses = tp.get('pauses', [])
+                        time_spent = tp.get('timeSpent', 0)
+                        deletion_ratio = (deletions / keystrokes) if keystrokes > 0 else 0
+                        long_pauses = [p for p in pauses if p > 2000] if isinstance(pauses, list) else []
+                        tp_parts = []
+                        tp_parts.append(f"- Keystrokes: {keystrokes}")
+                        tp_parts.append(f"- Deletions: {deletions} ({round(deletion_ratio * 100)}% of keystrokes)")
+                        tp_parts.append(f"- Pauses > 2s: {len(long_pauses)}")
+                        tp_parts.append(f"- Time spent: {round(time_spent / 1000)}s")
+                        question_details += "\n\n**Student Thinking Pattern (use this to personalise your opening, never quote raw numbers):**\n" + "\n".join(tp_parts)
+
             # Add knowledge base context (including linked learning materials)
             if request.task_type == TaskType.QUIZ:
                 knowledge_base = await build_knowledge_base_from_context(
@@ -684,7 +700,22 @@ async def ai_response_for_question(request: AIChatRequest):
                             explanation: str = Field(
                                 description="Brief explanation of why this approach is different/interesting"
                             )
-                        
+
+                        class CodeAnnotation(BaseModel):
+                            line: int = Field(
+                                description="1-based line number in the student's code"
+                            )
+                            type: str = Field(
+                                description="Annotation type: 'issue', 'suggestion', or 'explanation'"
+                            )
+                            comment: str = Field(
+                                description="Concise annotation comment for this line"
+                            )
+                            hint: Optional[str] = Field(
+                                description="A Socratic question to guide the student (for 'issue' type only)",
+                                default=None
+                            )
+
                         class Output(BaseModel):
                             analysis: str = Field(
                                 description="A detailed analysis of the student's code"
@@ -703,6 +734,14 @@ async def ai_response_for_question(request: AIChatRequest):
                                 description="1-2 alternate solutions with different approaches/logic (only when user has successfully submitted)",
                                 default=None
                             )
+                            code_xray: Optional[list[CodeAnnotation]] = Field(
+                                description="Inline annotations on specific lines of the student's code. Generate when: (a) code is incorrect — annotate the 1-3 most critical lines with issues/hints, or (b) code is correct — annotate interesting lines with explanations/suggestions for deeper learning. Max 5 annotations total.",
+                                default=None
+                            )
+                            breakthrough_moment: Optional[str] = Field(
+                                description="One sentence naming the specific concept the student struggled with and cracked. ONLY populate when is_correct=true AND attempt count > 1. Leave null on first correct attempt.",
+                                default=None
+                            )
                     else:
                         # Regular objective question
                         class Output(BaseModel):
@@ -714,6 +753,18 @@ async def ai_response_for_question(request: AIChatRequest):
                             )
                             is_correct: bool = Field(
                                 description="Whether the student's response correctly solves the original task that the student is supposed to solve. For this to be true, the original task needs to be completely solved and not just partially solved. Giving the right answer to one step of the task does not count as solving the entire task."
+                            )
+                            wrong_answer_type: Optional[str] = Field(
+                                description="When is_correct=false: classify as 'terminology_confusion', 'adjacent_concept', 'completely_wrong', or 'format_error'. Null when is_correct=true.",
+                                default=None
+                            )
+                            concept_score: Optional[int] = Field(
+                                description="0-100 conceptual proximity score. 90-100=correct/near-correct, 60-89=adjacent concept, 20-59=partially related, 0-19=completely wrong. Always populate for non-coding questions.",
+                                default=None
+                            )
+                            breakthrough_moment: Optional[str] = Field(
+                                description="One sentence naming the specific concept the student struggled with and cracked. ONLY populate when is_correct=true AND attempt count > 1. Leave null on first correct attempt.",
+                                default=None
                             )
 
                 else:
@@ -771,6 +822,10 @@ async def ai_response_for_question(request: AIChatRequest):
                         )
                         mini_lesson: Optional[str] = Field(
                             description="A concise 2-3 sentence explanation of the underlying concept when a student has attempted the same criterion 3+ times without improvement. Only include when genuinely stuck.",
+                            default=None
+                        )
+                        breakthrough_moment: Optional[str] = Field(
+                            description="One sentence naming the specific concept the student struggled with and cracked. ONLY populate when ALL criteria are at or above pass_score AND attempt count > 1. Leave null on first correct attempt.",
                             default=None
                         )
 
@@ -1079,6 +1134,18 @@ async def ai_response_for_assignment(request: AIChatRequest):
                 )
                 current_key_area: Optional[str] = Field(
                     description="Current key area being evaluated"
+                )
+                inline_annotations: Optional[list[dict]] = Field(
+                    description="For TEXT submissions only: list of {quote, comment, type} objects. quote=exact sentence from submission, comment=specific targeted feedback, type='strength'|'issue'|'suggestion'. Provide 3-6 annotations on Phase 1.",
+                    default=None
+                )
+                architectural_review: Optional[str] = Field(
+                    description="For CODE submissions only: a holistic paragraph on whether the overall approach is sound — scalability, design patterns, production-readiness. Not line-level bugs.",
+                    default=None
+                )
+                code_xray: Optional[list[dict]] = Field(
+                    description="For CODE submissions only: line-level annotations. Each item: {line (1-based int), type ('issue'|'suggestion'|'explanation'), comment (<=15 words), hint (optional Socratic question)}. Max 6.",
+                    default=None
                 )
 
             # Output model for file submissions that includes project score
