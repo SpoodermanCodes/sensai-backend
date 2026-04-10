@@ -43,6 +43,7 @@ from api.prompts.objective_question import OBJECTIVE_QUESTION_SYSTEM_PROMPT, OBJ
 from api.prompts.subjective_question import SUBJECTIVE_QUESTION_SYSTEM_PROMPT, SUBJECTIVE_QUESTION_USER_PROMPT
 from api.prompts.doubt_solving import DOUBT_SOLVING_SYSTEM_PROMPT, DOUBT_SOLVING_USER_PROMPT
 from api.prompts.assignment import ASSIGNMENT_SYSTEM_PROMPT, ASSIGNMENT_USER_PROMPT
+from api.prompts.assessment_generation import ASSESSMENT_GENERATION_SYSTEM_PROMPT, ASSESSMENT_GENERATION_USER_PROMPT
 
 router = APIRouter()
 
@@ -1136,6 +1137,30 @@ async def ai_response_for_assignment(request: AIChatRequest):
                     description="Current key area being evaluated"
                 )
                 inline_annotations: Optional[list[dict]] = Field(
+                    description="For TEXT submissions only: list of {quote, comment, type} objects. quote=exact sentence from submission, comment=specific targeted feedback, type='strength'|'issue'|'suggestion'. Provide 3-6 on Phase 1.",
+                    default=None
+                )
+                architectural_review: Optional[str] = Field(
+                    description="For CODE submissions only: a holistic paragraph on whether the overall approach is sound — scalability, design patterns, production-readiness. Not line-level bugs.",
+                    default=None
+                )
+                code_xray: Optional[list[dict]] = Field(
+                    description="For CODE submissions only: line-level annotations. Each item: {line (1-based int), type ('issue'|'suggestion'|'explanation'), comment (<=15 words), hint (optional Socratic question)}. Max 6.",
+                    default=None
+                )
+                inline_annotations: Optional[list[dict]] = Field(
+                    description="For TEXT submissions only: list of {quote, comment, type} objects. quote=exact sentence from submission, comment=specific targeted feedback, type='strength'|'issue'|'suggestion'. Provide 3-6 annotations on Phase 1.",
+                    default=None
+                )
+                architectural_review: Optional[str] = Field(
+                    description="For CODE submissions only: a holistic paragraph on whether the overall approach is sound — scalability, design patterns, production-readiness. Not line-level bugs.",
+                    default=None
+                )
+                code_xray: Optional[list[dict]] = Field(
+                    description="For CODE submissions only: line-level annotations. Each item: {line (1-based int), type ('issue'|'suggestion'|'explanation'), comment (<=15 words), hint (optional Socratic question)}. Max 6.",
+                    default=None
+                )
+                inline_annotations: Optional[list[dict]] = Field(
                     description="For TEXT submissions only: list of {quote, comment, type} objects. quote=exact sentence from submission, comment=specific targeted feedback, type='strength'|'issue'|'suggestion'. Provide 3-6 annotations on Phase 1.",
                     default=None
                 )
@@ -1231,3 +1256,87 @@ async def ai_response_for_assignment(request: AIChatRequest):
         media_type="application/x-ndjson",
     )
 
+
+
+class GenerateAssessmentRequest(BaseModel):
+    reference_material: str
+    question_type: Optional[str] = None  # 'objective' | 'coding' | 'assignment' | None (auto-infer)
+    num_questions: Optional[int] = 3
+    additional_instructions: Optional[str] = None
+
+
+@router.post("/generate-assessment")
+async def generate_assessment(request: GenerateAssessmentRequest):
+    """
+    Generate a complete assessment package from reference material.
+    Returns questions + evaluation criteria (rubric / test cases / correct answers).
+    Results are recommendations only — teacher must review and publish.
+    """
+    generation_request_parts = [
+        f"Generate {request.num_questions} question(s).",
+    ]
+    if request.question_type:
+        generation_request_parts.append(f"Question type: {request.question_type}.")
+    else:
+        generation_request_parts.append("Infer the most appropriate question type from the material.")
+    if request.additional_instructions:
+        generation_request_parts.append(f"Additional instructions: {request.additional_instructions}")
+
+    generation_request = " ".join(generation_request_parts)
+
+    class WrongAnswer(BaseModel):
+        answer: str = Field(description="The wrong answer text")
+        error_type: str = Field(description="One of: terminology_confusion, adjacent_concept, completely_wrong, format_error")
+        concept_score: int = Field(description="0-100 conceptual proximity score for this wrong answer")
+
+    class TestCase(BaseModel):
+        input: str = Field(description="Input to the function/program")
+        expected_output: str = Field(description="Expected output")
+        description: str = Field(description="What this test case checks")
+
+    class RubricCriterion(BaseModel):
+        name: str
+        description: str
+        min_score: float
+        max_score: float
+        pass_score: float
+        strong_response: str = Field(description="What a strong response looks like")
+        weak_response: str = Field(description="What a weak response looks like")
+
+    class GeneratedQuestion(BaseModel):
+        question_type: str = Field(description="'objective', 'coding', or 'assignment'")
+        title: str = Field(description="Short title for the question")
+        question_text: str = Field(description="The full question text")
+        difficulty: str = Field(description="'easy', 'medium', or 'hard'")
+        # For objective questions
+        correct_answer: Optional[str] = Field(default=None, description="The correct answer (for objective questions)")
+        common_wrong_answers: Optional[list[WrongAnswer]] = Field(default=None, description="2-3 common wrong answers with error types (for objective questions)")
+        # For coding questions
+        reference_solution: Optional[str] = Field(default=None, description="Reference solution code (for coding questions)")
+        test_cases: Optional[list[TestCase]] = Field(default=None, description="3-5 test cases (for coding questions)")
+        coding_language: Optional[str] = Field(default=None, description="Recommended coding language")
+        # For assignments
+        rubric: Optional[list[RubricCriterion]] = Field(default=None, description="Scoring rubric (for text assignments)")
+
+    class AssessmentOutput(BaseModel):
+        inferred_question_type: str = Field(description="The question type used: 'objective', 'coding', or 'assignment'")
+        rationale: str = Field(description="Brief explanation of why this question type was chosen")
+        questions: list[GeneratedQuestion]
+
+    messages = compile_prompt(
+        ASSESSMENT_GENERATION_SYSTEM_PROMPT,
+        ASSESSMENT_GENERATION_USER_PROMPT,
+        reference_material=request.reference_material,
+        generation_request=generation_request,
+    )
+
+    model = openai_plan_to_model_name["text"]
+
+    result = await run_llm_with_openai(
+        model=model,
+        messages=messages,
+        response_model=AssessmentOutput,
+        max_output_tokens=8192,
+    )
+
+    return result.model_dump()
