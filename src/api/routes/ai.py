@@ -347,6 +347,78 @@ def get_ai_message_for_chat_history(ai_message: dict) -> str:
     return f"""Feedback:\n```\n{message['feedback']}\n```\n\nScorecard:\n```\n{scorecard_as_prompt}\n```"""
 
 
+def analyze_criterion_attempts(chat_history: list[dict], scorecard_criteria: list[dict]) -> str:
+    """
+    Analyze chat history to identify criteria where student is stuck (3+ attempts without improvement).
+    Returns a formatted string to inject into the prompt.
+    """
+    # Track scores per criterion across attempts
+    criterion_scores = {}
+    # Track total attempts
+    total_attempts = 0
+    
+    for message in chat_history:
+        if message["role"] == "assistant":
+            try:
+                content = json.loads(message["content"])
+                if "scorecard" in content and content["scorecard"]:
+                    total_attempts += 1
+                    scorecard = content["scorecard"]
+                    
+                    # Handle both dict and list formats
+                    if isinstance(scorecard, dict):
+                        for criterion_name, data in scorecard.items():
+                            if criterion_name not in criterion_scores:
+                                criterion_scores[criterion_name] = []
+                            criterion_scores[criterion_name].append(data.get("score", 0))
+                    elif isinstance(scorecard, list):
+                        for item in scorecard:
+                            criterion_name = item.get("category")
+                            if criterion_name and criterion_name not in criterion_scores:
+                                criterion_scores[criterion_name] = []
+                            if criterion_name:
+                                criterion_scores[criterion_name].append(item.get("score", 0))
+            except (json.JSONDecodeError, KeyError):
+                continue
+    
+    # Build analysis message
+    analysis_parts = []
+    
+    # Add overall attempt count for Socratic depth calibration
+    if total_attempts > 0:
+        depth_guidance = ""
+        if total_attempts == 1:
+            depth_guidance = "This is the student's first attempt. Use broad, open-ended Socratic questions."
+        elif total_attempts == 2:
+            depth_guidance = "This is the student's second attempt. Provide more focused hints that narrow down the problem space."
+        else:
+            depth_guidance = f"This is the student's attempt #{total_attempts}. Give more specific guidance while still not revealing the answer."
+        
+        analysis_parts.append(f"**Attempt Count:** {total_attempts}\n{depth_guidance}")
+    
+    # Check if student has made 3+ attempts overall for mini lesson
+    if total_attempts >= 3:
+        analysis_parts.append("\n**Mini Lesson Trigger:** The student has made 3 or more attempts. Consider providing a mini_lesson to help them understand the underlying concepts they're struggling with.")
+    
+    # Identify stuck criteria (3+ attempts without improvement)
+    stuck_criteria = []
+    for criterion_name, scores in criterion_scores.items():
+        if len(scores) >= 3:
+            # Check if last 3 attempts show no improvement
+            recent_scores = scores[-3:]
+            if recent_scores[-1] <= recent_scores[0]:  # No improvement from 3 attempts ago
+                stuck_criteria.append(f"- **{criterion_name}**: {len(scores)} attempts, scores: {scores}")
+    
+    if stuck_criteria:
+        analysis_parts.append("\n**Stuck Criteria (3+ attempts without improvement):**\n" + "\n".join(stuck_criteria))
+        analysis_parts.append("Consider providing a mini_lesson for these specific criteria.")
+    
+    if analysis_parts:
+        return "\n\n**Student Progress Analysis:**\n" + "\n".join(analysis_parts)
+    
+    return ""
+
+
 async def get_user_details_for_prompt(user_id: str) -> str:
     user_first_name = await get_user_first_name(user_id)
 
@@ -526,8 +598,29 @@ async def ai_response_for_question(request: AIChatRequest):
                     scorecard_as_prompt = convert_scorecard_to_prompt(
                         question["scorecard"]
                     )
+                    
+                    # Analyze attempt history for stuck criteria
+                    struggle_analysis = analyze_criterion_attempts(
+                        chat_history, 
+                        question["scorecard"]["criteria"]
+                    )
+                    
                     question_details += (
                         f"---\n\n**Scoring Criteria**\n\n{scorecard_as_prompt}\n\n"
+                    )
+                    
+                    if struggle_analysis:
+                        question_details += struggle_analysis
+
+            # Add knowledge base context (including linked learning materials)
+            if request.task_type == TaskType.QUIZ:
+                knowledge_base = await build_knowledge_base_from_context(
+                    question.get("context")
+                )
+
+                if knowledge_base:
+                    question_details += (
+                        f"---\n\n**Knowledge Base (use this for mini lessons and explanations)**\n\n{knowledge_base}\n\n"
                     )
 
             chat_history = chat_history + new_user_message
@@ -552,16 +645,76 @@ async def ai_response_for_question(request: AIChatRequest):
             if request.task_type == TaskType.QUIZ:
                 if question["type"] == QuestionType.OBJECTIVE:
 
-                    class Output(BaseModel):
-                        analysis: str = Field(
-                            description="A detailed analysis of the student's response"
-                        )
-                        feedback: str = Field(
-                            description="Feedback on the student's response; add newline characters to the feedback to make it more readable where necessary; address the student by name if their name has been provided."
-                        )
-                        is_correct: bool = Field(
-                            description="Whether the student's response correctly solves the original task that the student is supposed to solve. For this to be true, the original task needs to be completely solved and not just partially solved. Giving the right answer to one step of the task does not count as solving the entire task."
-                        )
+                    # Check if this is a coding question
+                    is_coding_question = question.get("input_type") == "code"
+                    
+                    if is_coding_question:
+                        # For coding questions, provide structured feedback
+                        class CodeFeedback(BaseModel):
+                            correct: Optional[str] = Field(
+                                description="What worked well in the code"
+                            )
+                            wrong: Optional[str] = Field(
+                                description="What needs improvement in the code"
+                            )
+                        
+                        class CodeCriterion(BaseModel):
+                            feedback: CodeFeedback = Field(
+                                description="Detailed feedback for this code quality criterion"
+                            )
+                            score: float = Field(
+                                description="Score for this criterion (0-10)"
+                            )
+                            max_score: float = Field(
+                                description="Maximum score (10)",
+                                default=10.0
+                            )
+                            pass_score: float = Field(
+                                description="Pass score (7)",
+                                default=7.0
+                            )
+                        
+                        class AlternateSolution(BaseModel):
+                            approach: str = Field(
+                                description="Name/description of the alternate approach"
+                            )
+                            code: str = Field(
+                                description="Code implementation of the alternate solution"
+                            )
+                            explanation: str = Field(
+                                description="Brief explanation of why this approach is different/interesting"
+                            )
+                        
+                        class Output(BaseModel):
+                            analysis: str = Field(
+                                description="A detailed analysis of the student's code"
+                            )
+                            feedback: str = Field(
+                                description="Overall feedback summary; address the student by name if provided."
+                            )
+                            is_correct: bool = Field(
+                                description="Whether the code correctly solves the problem"
+                            )
+                            code_quality: Optional[dict[str, CodeCriterion]] = Field(
+                                description="Structured feedback on code quality across 4 criteria: 'Correctness and Logic', 'Efficiency and Optimization', 'Readability and Style', 'Error Handling'",
+                                default=None
+                            )
+                            alternate_solutions: Optional[list[AlternateSolution]] = Field(
+                                description="1-2 alternate solutions with different approaches/logic (only when user has successfully submitted)",
+                                default=None
+                            )
+                    else:
+                        # Regular objective question
+                        class Output(BaseModel):
+                            analysis: str = Field(
+                                description="A detailed analysis of the student's response"
+                            )
+                            feedback: str = Field(
+                                description="Feedback on the student's response; add newline characters to the feedback to make it more readable where necessary; address the student by name if their name has been provided."
+                            )
+                            is_correct: bool = Field(
+                                description="Whether the student's response correctly solves the original task that the student is supposed to solve. For this to be true, the original task needs to be completely solved and not just partially solved. Giving the right answer to one step of the task does not count as solving the entire task."
+                            )
 
                 else:
 
@@ -615,6 +768,10 @@ async def ai_response_for_question(request: AIChatRequest):
                         )
                         scorecard: Optional[Scorecard] = Field(
                             description="Score and feedback for each criterion from the scoring criteria; only include this in the response if the student's response is a valid response to the task"
+                        )
+                        mini_lesson: Optional[str] = Field(
+                            description="A concise 2-3 sentence explanation of the underlying concept when a student has attempted the same criterion 3+ times without improvement. Only include when genuinely stuck.",
+                            default=None
                         )
 
             else:
@@ -1006,3 +1163,4 @@ async def ai_response_for_assignment(request: AIChatRequest):
         stream_response(),
         media_type="application/x-ndjson",
     )
+

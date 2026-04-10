@@ -717,6 +717,7 @@ class AIChatRequest(BaseModel):
     user_email: str
     task_id: int
     response_type: Optional[ChatResponseType] = None
+    thinking_pattern_data: Optional[Dict] = None
 
 
 class MarkTaskCompletedRequest(BaseModel):

@@ -231,5 +231,17 @@ async def cleanup_invalid_chat_history():
         await conn.commit()
 
 
+async def create_feedback_patterns_table_migration():
+    """
+    Migration: Creates the feedback_patterns table if it doesn't exist.
+    """
+    async with get_new_db_connection() as conn:
+        cursor = await conn.cursor()
+        from api.db import create_feedback_patterns_table
+        await create_feedback_patterns_table(cursor)
+        await conn.commit()
+
+
 async def run_migrations():
     await cleanup_invalid_chat_history()
+    await create_feedback_patterns_table_migration()

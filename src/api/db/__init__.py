@@ -33,6 +33,7 @@ from api.config import (
     assignment_table_name,
     bq_sync_table_name,
 )
+from api.config import feedback_patterns_table_name
 from api.db.migration import run_migrations
 
 
@@ -318,6 +319,30 @@ async def create_course_cohorts_table(cursor):
 
     await cursor.execute(
         f"""CREATE INDEX idx_course_cohort_cohort_id ON {course_cohorts_table_name} (cohort_id)"""
+    )
+
+
+async def create_feedback_patterns_table(cursor):
+    await cursor.execute(
+        f"""CREATE TABLE IF NOT EXISTS {feedback_patterns_table_name} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_id INTEGER,
+                task_id INTEGER,
+                pattern_hash TEXT NOT NULL UNIQUE,
+                pattern_summary TEXT NOT NULL,
+                occurrence_count INTEGER DEFAULT 1,
+                example_snippet TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+    )
+    await cursor.execute(
+        f"""CREATE INDEX IF NOT EXISTS idx_fp_question_id
+            ON {feedback_patterns_table_name} (question_id)"""
+    )
+    await cursor.execute(
+        f"""CREATE INDEX IF NOT EXISTS idx_fp_task_id
+            ON {feedback_patterns_table_name} (task_id)"""
     )
 
 
@@ -707,6 +732,8 @@ async def init_db():
             await create_integrations_table(cursor)
 
             await create_assignment_table(cursor)
+
+            await create_feedback_patterns_table(cursor)
 
             await create_bq_sync_table(cursor)
 

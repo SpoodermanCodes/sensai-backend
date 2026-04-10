@@ -60,6 +60,7 @@ code_drafts_table_name = "code_drafts"
 integrations_table_name = "integrations"
 bq_sync_table_name = "bq_sync"
 assignment_table_name = "assignment"
+feedback_patterns_table_name = "feedback_patterns"
 
 UPLOAD_FOLDER_NAME = "uploads"
 
