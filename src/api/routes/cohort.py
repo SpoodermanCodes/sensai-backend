@@ -23,6 +23,7 @@ from api.db.analytics import (
     get_cohort_completion as get_cohort_completion_from_db,
     get_cohort_course_attempt_data as get_cohort_course_attempt_data_from_db,
     get_cohort_streaks as get_cohort_streaks_from_db,
+    get_cohort_engagement_stats as get_cohort_engagement_stats_from_db,
 )
 from api.db.course import get_course as get_course_from_db
 from api.models import (
@@ -158,30 +159,50 @@ async def get_leaderboard_data(cohort_id: int, batch_id: int | None = None) -> D
         return {}
 
     task_completions = await get_cohort_completion_from_db(cohort_id, user_ids)
+    engagement_stats = await get_cohort_engagement_stats_from_db(cohort_id, batch_id)
 
     num_tasks = len(task_completions[user_ids[0]])
 
     for user_data in leaderboard_data:
         user_id = user_data["user"]["id"]
-        num_tasks_completed = 0
 
-        for task_completion_data in task_completions[user_id].values():
-            if task_completion_data["is_complete"]:
-                num_tasks_completed += 1
+        tasks_completed = sum(
+            1 for t in task_completions[user_id].values() if t["is_complete"]
+        )
+        user_data["tasks_completed"] = tasks_completed
 
-        user_data["tasks_completed"] = num_tasks_completed
+        eng = engagement_stats.get(user_id, {})
+        replies = eng.get("replies_sent", 0)
+        correct = eng.get("correct_answers", 0)
+        wrong = eng.get("wrong_answers", 0)
+        hours = eng.get("hours_learnt", 0.0)
+        streak = user_data["streak_count"]
+
+        user_data["replies_sent"] = replies
+        user_data["correct_answers"] = correct
+        user_data["wrong_answers"] = wrong
+        user_data["hours_learnt"] = hours
+
+        # Mastery score — correct answers dominate, spam signals worth very little
+        mastery_score = (
+            correct * 10
+            - wrong * 2
+            + replies * 0.5
+            + streak * 5
+            + tasks_completed * 8
+            + hours * 3
+        )
+        user_data["mastery_score"] = round(max(mastery_score, 0), 1)
 
     leaderboard_data = sorted(
         leaderboard_data,
-        key=lambda x: (x["streak_count"], x["tasks_completed"]),
+        key=lambda x: x["mastery_score"],
         reverse=True,
     )
 
     return {
         "stats": leaderboard_data,
-        "metadata": {
-            "num_tasks": num_tasks,
-        },
+        "metadata": {"num_tasks": num_tasks},
     }
 
 

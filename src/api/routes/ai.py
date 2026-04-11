@@ -595,6 +595,33 @@ async def ai_response_for_question(request: AIChatRequest):
                         question["answer"]
                     )
                     question_details += f"---\n\n**Reference Solution (never to be shared with the learner)**\n\n{answer_as_prompt}\n\n"
+                elif question["type"] == QuestionType.MCQ:
+                    correct_answer = construct_description_from_blocks(question["answer"])
+                    options = question.get("mcq_options") or []
+                    options_text = "\n".join([f"{chr(65+i)}. {opt}" for i, opt in enumerate(options)])
+                    question_details += f"---\n\n**MCQ Options**\n\n{options_text}\n\n**Correct Answer (never to be shared with the learner)**\n\n{correct_answer}\n\n"
+
+                    # Inject attempt analysis for Socratic depth + mini lesson trigger
+                    struggle_analysis = analyze_criterion_attempts(chat_history, [])
+                    if struggle_analysis:
+                        question_details += struggle_analysis
+
+                    # Inject thinking pattern data if provided
+                    if request.thinking_pattern_data:
+                        tp = request.thinking_pattern_data
+                        keystrokes = tp.get('keystrokes', 0)
+                        deletions = tp.get('deletions', 0)
+                        pauses = tp.get('pauses', [])
+                        time_spent = tp.get('timeSpent', 0)
+                        deletion_ratio = (deletions / keystrokes) if keystrokes > 0 else 0
+                        long_pauses = [p for p in pauses if p > 2000] if isinstance(pauses, list) else []
+                        tp_parts = [
+                            f"- Keystrokes: {keystrokes}",
+                            f"- Deletions: {deletions} ({round(deletion_ratio * 100)}% of keystrokes)",
+                            f"- Pauses > 2s: {len(long_pauses)}",
+                            f"- Time spent: {round(time_spent / 1000)}s",
+                        ]
+                        question_details += "\n\n**Student Thinking Pattern (use this to personalise your opening, never quote raw numbers):**\n" + "\n".join(tp_parts)
                 else:
                     scorecard_as_prompt = convert_scorecard_to_prompt(
                         question["scorecard"]
@@ -660,7 +687,32 @@ async def ai_response_for_question(request: AIChatRequest):
 
             llm_output = ""
             if request.task_type == TaskType.QUIZ:
-                if question["type"] == QuestionType.OBJECTIVE:
+                if question["type"] == QuestionType.MCQ:
+                    class Output(BaseModel):
+                        feedback: str = Field(
+                            description="Feedback on the student's choice. If correct, congratulate and briefly explain why the correct option is right. If wrong, give a Socratic hint that guides them toward the right answer without revealing it. Address the student by name if provided."
+                        )
+                        is_correct: bool = Field(
+                            description="Whether the student selected the correct option"
+                        )
+                        wrong_answer_type: Optional[str] = Field(
+                            description="When is_correct=false: classify as 'plausible_distractor' (option seems right but misses a key distinction), 'opposite_concept' (student picked the conceptual opposite), 'partially_correct' (right idea, wrong specifics), or 'random_guess' (no apparent connection). Null when is_correct=true.",
+                            default=None
+                        )
+                        concept_score: Optional[int] = Field(
+                            description="0-100 conceptual proximity score. 100=correct, 70-99=plausible distractor (close but wrong), 40-69=partially correct, 10-39=opposite concept, 0-9=random guess. Always populate.",
+                            default=None
+                        )
+                        mini_lesson: Optional[str] = Field(
+                            description="A concise 2-3 sentence direct explanation of the underlying concept when the student has picked the same wrong option 2+ times or is clearly stuck. Only include when genuinely needed.",
+                            default=None
+                        )
+                        breakthrough_moment: Optional[str] = Field(
+                            description="One sentence naming the specific concept the student struggled with and cracked. ONLY populate when is_correct=true AND attempt count > 1. Leave null on first correct attempt.",
+                            default=None
+                        )
+
+                elif question["type"] == QuestionType.OBJECTIVE:
 
                     # Check if this is a coding question
                     is_coding_question = question.get("input_type") == "code"
@@ -719,13 +771,13 @@ async def ai_response_for_question(request: AIChatRequest):
 
                         class Output(BaseModel):
                             analysis: str = Field(
-                                description="A detailed analysis of the student's code"
+                                description="A detailed analysis of the student's code compared against the Reference Solution. First determine: does this code actually solve the stated problem? If the student submitted code for a completely different problem, state that explicitly."
                             )
                             feedback: str = Field(
                                 description="Overall feedback summary; address the student by name if provided."
                             )
                             is_correct: bool = Field(
-                                description="Whether the code correctly solves the problem"
+                                description="True ONLY if the code correctly solves the EXACT problem described in the task, produces the correct output for all expected inputs, AND matches the intent of the Reference Solution. If the student submitted code that solves a different problem entirely (even if that code is internally correct), is_correct MUST be false. Partial solutions are also false."
                             )
                             code_quality: Optional[dict[str, CodeCriterion]] = Field(
                                 description="Structured feedback on code quality across 4 criteria: 'Correctness and Logic', 'Efficiency and Optimization', 'Readability and Style', 'Error Handling'",
@@ -847,7 +899,7 @@ async def ai_response_for_question(request: AIChatRequest):
                         f"---\n\n**Knowledge Base**\n\n{knowledge_base}\n\n"
                     )
 
-                if question["type"] == QuestionType.OBJECTIVE:
+                if question["type"] == QuestionType.OBJECTIVE or question["type"] == QuestionType.MCQ:
                     prompt_name = "objective-question"
                     messages = compile_prompt(
                         OBJECTIVE_QUESTION_SYSTEM_PROMPT,

@@ -128,6 +128,8 @@ async def get_all_learning_material_tasks_for_course(course_id: int):
 
 
 def convert_question_db_to_dict(question) -> Dict:
+    settings = json.loads(question[12]) if question[12] else {}
+    mcq_options = settings.pop("mcq_options", None)
     result = {
         "id": question[0],
         "type": question[1],
@@ -141,7 +143,8 @@ def convert_question_db_to_dict(question) -> Dict:
         "max_attempts": question[9],
         "is_feedback_shown": question[10],
         "title": question[11],
-        "settings": json.loads(question[12]) if question[12] else None,
+        "settings": settings,
+        "mcq_options": mcq_options,
     }
 
     return result
@@ -324,6 +327,9 @@ def prepare_blocks_for_publish(blocks: List[Dict]) -> List[Dict]:
 
 def prepare_question_data(question: Dict, position: int) -> tuple:
     """Prepare question data for database operations"""
+    settings = question.get("settings") or {}
+    if question.get("mcq_options"):
+        settings["mcq_options"] = question["mcq_options"]
     return (
         str(question["type"]),
         json.dumps(prepare_blocks_for_publish(question["blocks"])),
@@ -345,7 +351,7 @@ def prepare_question_data(question: Dict, position: int) -> tuple:
         question["max_attempts"],
         question["is_feedback_shown"],
         question["title"],
-        json.dumps(question.get("settings", {})),
+        json.dumps(settings),
     )
 
 
@@ -546,6 +552,10 @@ async def update_published_quiz(
         for question in questions:
             question = question.model_dump()
 
+            settings = question.get("settings") or {}
+            if question.get("mcq_options"):
+                settings["mcq_options"] = question["mcq_options"]
+
             await cursor.execute(
                 f"""
                 UPDATE {questions_table_name} SET blocks = ?, answer = ?, input_type = ?, coding_language = ?, context = ?, response_type = ?, type = ?, title = ?, settings = ? WHERE id = ?
@@ -567,7 +577,7 @@ async def update_published_quiz(
                     str(question["response_type"]),
                     str(question["type"]),
                     question["title"],
-                    json.dumps(question.get("settings", {})),
+                    json.dumps(settings),
                     question["id"],
                 ),
             )

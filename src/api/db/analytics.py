@@ -285,6 +285,134 @@ async def get_cohort_course_attempt_data(cohort_learner_ids: List[int], course_i
 
 
 @cached(ttl=30, cache=SimpleMemoryCache)
+async def get_cohort_engagement_stats(cohort_id: int, batch_id: int | None = None) -> dict:
+    """
+    Returns per-user engagement signals for the mastery score:
+    - replies_sent: number of user messages sent
+    - correct_answers: AI messages where is_correct=true
+    - wrong_answers: AI messages where is_correct=false (and is_correct field exists)
+    - hours_learnt: sum of capped session durations (session = messages within 30-min gap, capped at 2h)
+    """
+    if batch_id is not None:
+        user_filter = f"""
+            SELECT uc.user_id FROM {user_cohorts_table_name} uc
+            JOIN {user_batches_table_name} ub ON uc.user_id = ub.user_id
+            WHERE uc.cohort_id = ? AND ub.batch_id = ? AND uc.role = 'learner'
+        """
+        params = (cohort_id, batch_id, cohort_id, batch_id)
+    else:
+        user_filter = f"SELECT user_id FROM {user_cohorts_table_name} WHERE cohort_id = ? AND role = 'learner'"
+        params = (cohort_id, cohort_id)
+
+    rows = await execute_db_operation(
+        f"""
+        SELECT
+            ch.user_id,
+            ch.role,
+            ch.content,
+            ch.created_at
+        FROM {chat_history_table_name} ch
+        WHERE ch.user_id IN ({user_filter})
+          AND ch.deleted_at IS NULL
+          AND (
+              ch.question_id IN (
+                  SELECT id FROM {questions_table_name}
+                  WHERE task_id IN (
+                      SELECT task_id FROM {course_tasks_table_name}
+                      WHERE course_id IN (
+                          SELECT course_id FROM {course_cohorts_table_name} WHERE cohort_id = ?
+                      )
+                  )
+              )
+              OR ch.task_id IN (
+                  SELECT task_id FROM {course_tasks_table_name}
+                  WHERE course_id IN (
+                      SELECT course_id FROM {course_cohorts_table_name} WHERE cohort_id = ?
+                  )
+              )
+          )
+        ORDER BY ch.user_id, ch.created_at ASC
+        """,
+        params + (cohort_id, cohort_id),
+        fetch_all=True,
+    )
+
+    from collections import defaultdict
+    import json
+    from datetime import datetime
+
+    user_messages = defaultdict(list)  # user_id -> [(role, content, created_at)]
+    for user_id, role, content, created_at in rows:
+        user_messages[user_id].append((role, content, created_at))
+
+    stats = {}
+    SESSION_GAP_SECONDS = 30 * 60   # 30 min gap = new session
+    SESSION_CAP_SECONDS = 2 * 3600  # cap each session at 2 hours
+
+    for user_id, messages in user_messages.items():
+        replies = 0
+        correct = 0
+        wrong = 0
+        timestamps = []
+
+        for role, content, created_at in messages:
+            if role == 'user':
+                replies += 1
+            elif role == 'assistant' and content:
+                try:
+                    parsed = json.loads(content)
+                    if 'is_correct' in parsed:
+                        if parsed['is_correct']:
+                            correct += 1
+                        else:
+                            wrong += 1
+                    elif 'scorecard' in parsed and isinstance(parsed['scorecard'], list):
+                        # subjective: passed if all scores >= pass_score
+                        sc = parsed['scorecard']
+                        if sc and all(
+                            item.get('score', 0) >= item.get('pass_score', item.get('max_score', 1))
+                            for item in sc
+                        ):
+                            correct += 1
+                        elif sc:
+                            wrong += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if created_at:
+                try:
+                    timestamps.append(datetime.fromisoformat(str(created_at)))
+                except (ValueError, TypeError):
+                    pass
+
+        # Compute hours learnt from session durations
+        hours_learnt = 0.0
+        if len(timestamps) >= 2:
+            timestamps.sort()
+            session_start = timestamps[0]
+            prev = timestamps[0]
+            for ts in timestamps[1:]:
+                gap = (ts - prev).total_seconds()
+                if gap > SESSION_GAP_SECONDS:
+                    # close previous session
+                    session_secs = min((prev - session_start).total_seconds(), SESSION_CAP_SECONDS)
+                    hours_learnt += session_secs / 3600
+                    session_start = ts
+                prev = ts
+            # close final session
+            session_secs = min((prev - session_start).total_seconds(), SESSION_CAP_SECONDS)
+            hours_learnt += session_secs / 3600
+
+        stats[user_id] = {
+            'replies_sent': replies,
+            'correct_answers': correct,
+            'wrong_answers': wrong,
+            'hours_learnt': round(hours_learnt, 2),
+        }
+
+    return stats
+
+
+@cached(ttl=30, cache=SimpleMemoryCache)
 async def get_cohort_streaks(
     cohort_id: int,
     view: LeaderboardViewType = LeaderboardViewType.ALL_TIME,

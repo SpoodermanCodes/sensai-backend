@@ -277,6 +277,7 @@ class TaskAIResponseType(Enum):
 class QuestionType(Enum):
     OPEN_ENDED = "subjective"
     OBJECTIVE = "objective"
+    MCQ = "mcq"
 
     def __str__(self):
         return self.value
@@ -343,6 +344,7 @@ class DraftQuestion(BaseModel):
     scorecard_id: Optional[int] = None
     title: str
     settings: Optional[Any] = None
+    mcq_options: Optional[List[str]] = None
 
 
 class PublishedQuestion(DraftQuestion):
@@ -603,6 +605,7 @@ class UpdateQuestionRequest(BaseModel):
     type: QuestionType | None
     title: str
     settings: Optional[Any] = None
+    mcq_options: Optional[List[str]] = None
 
 
 class UpdatePublishedQuizRequest(BaseModel):
